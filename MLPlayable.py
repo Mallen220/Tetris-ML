@@ -412,7 +412,7 @@ class TetrisEnv:
 
         max_height = max(heights) if heights else 0
 
-        # Calculate bumpiness (surface unevenness)
+        # Calculate bumpiness
         bumpiness = 0
         for i in range(9):
             bumpiness += abs(heights[i] - heights[i + 1])
@@ -463,11 +463,11 @@ class TetrisEnv:
         # Calculate total value
         value = (
                 clear_reward +
-                height_penalty +
+                # height_penalty +
                 row_fill_reward +
                 time_reward +
                 aggregate_height_penalty +
-                hole_penalty +
+                # hole_penalty +
                 bumpiness_penalty +
                 survival_bonus +
                 lost_penalty
@@ -754,7 +754,7 @@ def main_menu():
         print("Training new model...")
         model = DQN("MlpPolicy", env, verbose=1, buffer_size=100000)
 
-    model.learn(total_timesteps=9000000, progress_bar=True)
+    model.learn(total_timesteps=1000000, progress_bar=True)
     model.save("tetris_dqn_model")
 
     # Run the trained model
