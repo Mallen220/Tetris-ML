@@ -149,12 +149,10 @@ T = [['.....',
       '..0..',
       '.....']]
 
+shapes = [I]
 shapes = [S, Z, I, O, J, L, T]
 shape_colors = [(0, 255, 0), (255, 0, 0), (0, 255, 255), (255, 255, 0), (255, 165, 0), (0, 0, 255), (128, 0, 128)]
-
-
-# index 0 - 6 represent shape
-
+# shape_colors = [(0, 255, 0), (255, 0, 0), (0, 255, 255), (255, 255, 0), (255, 165, 0), (0, 0, 255), (128, 0, 128)]
 
 class Piece(object):
     def __init__(self, x, y, shape):
@@ -163,10 +161,6 @@ class Piece(object):
         self.shape = shape
         self.color = shape_colors[shapes.index(self.shape)]
         self.rotation = 0
-
-
-def get_shape():  # TODO make this go through all shapes instead of true random
-    return Piece(5, 0, random.choice(shapes))
 
 def create_grid(locked_positions={}):
     grid = [[(0, 0,0 ) for x in range(10)] for y in range(20)]
@@ -186,11 +180,12 @@ class TetrisEnv:
         self.window_id = window_id
 
         self.win = pygame.display.set_mode((s_width, s_height))
+        self.possible_next_pieces = shapes.copy()
         self.run = True
         self.locked_positions = {}
         self.grid = create_grid(self.locked_positions)
-        self.current_piece = get_shape()
-        self.next_piece = get_shape()
+        self.current_piece = self.get_shape()
+        self.next_piece = self.get_shape()
         self.clock = pygame.time.Clock()
         self.fall_time = 0
         self.fall_speed = 0.27  # controls how fast the pieces fall
@@ -218,6 +213,14 @@ class TetrisEnv:
     def get_grid(self):
         return self.grid
 
+    def get_shape(self):
+        if len(self.possible_next_pieces) == 0:
+            self.possible_next_pieces = shapes.copy()
+
+        new_piece = random.choice(self.possible_next_pieces)
+        self.possible_next_pieces.remove(new_piece)
+        return Piece(5, 0, new_piece)
+
     def get_state(self):
         flat_grid = [1 if cell != (0, 0, 0) else 0 for row in self.grid for cell in row]
         piece_info = self.get_piece_info()
@@ -232,7 +235,7 @@ class TetrisEnv:
                 self.locked_positions[(pos[0], pos[1])] = self.current_piece.color
 
         self.current_piece = self.next_piece
-        self.next_piece = get_shape()
+        self.next_piece = self.get_shape()
         self.grid = create_grid(self.locked_positions)
         cleared = clear_rows(self.grid, self.locked_positions)
         self.score += cleared * 10
@@ -283,7 +286,7 @@ class TetrisEnv:
                     self.locked_positions[(pos[0], pos[1])] = self.current_piece.color
 
             self.current_piece = self.next_piece
-            self.next_piece = get_shape()
+            self.next_piece = self.get_shape()
 
         # Update grid and score
         self.grid = create_grid(self.locked_positions)
@@ -397,7 +400,7 @@ class TetrisEnv:
     def evaluate_board(self, grid, cleared=0):
         """Evaluate the quality of a board position""" #TODO modify this function to include more heuristics
         """Returns Reward Value"""
-        # Calculate height metrics
+        # Calculate height
         heights = []
         aggregate_height = 0
         for col in range(10):
@@ -805,4 +808,3 @@ if __name__ == "__main__":
     freeze_support()
     main_menu()
     # rerun_model()
-
