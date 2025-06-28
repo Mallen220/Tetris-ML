@@ -10,6 +10,10 @@ from pygame import surface
 from pygame.examples import grid
 from stable_baselines3.common.monitor import Monitor
 
+import logging
+import csv
+from datetime import datetime
+
 # creating the data structure for pieces
 # setting up global vars
 # functions
@@ -41,6 +45,7 @@ s_height = 700
 play_width = 300  # meaning 300 // 10 = 30 width per block
 play_height = 600  # meaning 600 // 20 = 20 height per block
 block_size = 30
+episode_counter = 0
 
 top_left_x = (s_width - play_width) // 2
 top_left_y = s_height - play_height
@@ -149,10 +154,40 @@ T = [['.....',
       '..0..',
       '.....']]
 
-shapes = [I]
+# shapes = [I]
 shapes = [S, Z, I, O, J, L, T]
 shape_colors = [(0, 255, 0), (255, 0, 0), (0, 255, 255), (255, 255, 0), (255, 165, 0), (0, 0, 255), (128, 0, 128)]
 # shape_colors = [(0, 255, 0), (255, 0, 0), (0, 255, 255), (255, 255, 0), (255, 165, 0), (0, 0, 255), (128, 0, 128)]
+
+# Setup logger
+log_dir = "logs"
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, f"tetris_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+
+logging.basicConfig(
+    filename=log_file,
+    filemode='w',
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+logger = logging.getLogger(__name__)
+
+
+csv_file = os.path.join(log_dir, f"tetris_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+csv_headers = ["episode", "Reward", "Cleared", "Height", "row_fill_reward", "time_reward", "aggregate_height_penalty", "holes", "bumpiness", "survival_bonus", "lost_penalty"]
+
+csv_fp = open(csv_file, mode='w', newline='')
+csv_writer = csv.DictWriter(csv_fp, fieldnames=csv_headers)
+csv_writer.writeheader()
+
+# console = logging.StreamHandler()
+# console.setLevel(logging.INFO)
+# formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+# console.setFormatter(formatter)
+# logger.addHandler(console)
+
+
 
 class Piece(object):
     def __init__(self, x, y, shape):
@@ -199,6 +234,7 @@ class TetrisEnv:
         self.render_enabled = True  # toggle this to False if running headless
         self.fast_mode = True
         self.done = check_lost(self.locked_positions)
+        self.start_time = pygame.time.get_ticks()
 
         if self.render_enabled:
             pygame.init()
@@ -240,11 +276,12 @@ class TetrisEnv:
         cleared = clear_rows(self.grid, self.locked_positions)
         self.score += cleared * 10
         self.done = check_lost(self.locked_positions)
-        reward = self.evaluate_board(self.grid, cleared)
-
-        return reward
+        # reward = self.evaluate_board(self.grid, cleared)
+        #
+        # return reward
 
     def step(self, action):
+        # print(action)
 
         self.fall_time += pygame.time.get_ticks()
         self.level_time += pygame.time.get_ticks()
@@ -297,7 +334,7 @@ class TetrisEnv:
         cleared = clear_rows(self.grid, self.locked_positions)
         self.score += cleared * 10
 
-        reward = self.evaluate_board(self.grid, cleared)
+        reward = self.evaluate_board(self.grid, cleared, True)
 
         # print(reward, self.score, cleared, count_holes(self.grid), get_piece_height(self.current_piece))
         return self.get_grid(), reward, self.done
@@ -397,7 +434,7 @@ class TetrisEnv:
 
         return best_action
 
-    def evaluate_board(self, grid, cleared=0):
+    def evaluate_board(self, grid, cleared=0, logs=False):
         """Evaluate the quality of a board position""" #TODO modify this function to include more heuristics
         """Returns Reward Value"""
         # Calculate height
@@ -447,8 +484,11 @@ class TetrisEnv:
                 # Scale the reward quadratically to favor fuller rows
                 row_fill_reward += (filled / 10) ** 2 * 6  # You can tune the weight (5)
 
-        time_running = self.clock.get_time()
-        time_reward = time_running * 10
+        if hasattr(self, "start_time"):
+            time_running = (pygame.time.get_ticks() - self.start_time) / 1000
+            time_reward = time_running * 5
+        else:
+            time_reward = 0
 
         # Penalties (make these dominant factors)
         height_penalty = max_height * -10  # Strong penalty for max height
@@ -463,29 +503,50 @@ class TetrisEnv:
         # Survival bonus (small to encourage longevity without promoting height)
         survival_bonus = 0.1 if not self.done else 0
 
+
+
         # Calculate total value
         value = (
                 clear_reward +
                 # height_penalty +
                 row_fill_reward +
                 time_reward +
-                aggregate_height_penalty +
+                # aggregate_height_penalty +
                 # hole_penalty +
-                bumpiness_penalty +
+                # bumpiness_penalty +
                 survival_bonus +
                 lost_penalty
         )
 
-        # print("Value: ", value,
-        #       "cleared_reward: ", clear_reward,
-        #         "height_penalty: ", height_penalty,
-        #         "row_fill_reward: ", row_fill_reward,
-        #         "time_reward:", time_reward,
-        #         "aggregate_height_penalty: ", aggregate_height_penalty,
-        #         "hole_penalty: ", hole_penalty,
-        #         "bumpiness_penalty: ", bumpiness_penalty,
-        #         "survival_bonus: ", survival_bonus,
-        #         "lost_penalty: ", lost_penalty)
+        if logs:
+            global episode_counter
+            if self.done:
+                episode_counter += 1
+
+            logger.info(f"Reward: {round(value, 2)}, "
+                        f"Cleared: {round(cleared, 2)}, "
+                        f"Height: {round(height_penalty, 2)}, "
+                        f"row_fill_reward: {round(row_fill_reward, 2)}, "
+                        f"time_reward: {round(time_reward, 2)}, "
+                        f"aggregate_height_penalty: {round(aggregate_height_penalty, 2)}, "
+                        f"holes: {round(holes, 2)}, "
+                        f"bumpiness: {round(bumpiness, 2)}, "
+                        f"survival_bonus: {round(survival_bonus, 2)}, "
+                        f"lost_penalty: {round(lost_penalty, 2)}")
+            csv_writer.writerow({
+                "episode": episode_counter,
+                "Reward": round(value, 2),
+                "Cleared": round(cleared, 2),
+                "Height": round(height_penalty, 2),
+                "row_fill_reward": round(row_fill_reward, 2),
+                "time_reward": round(time_reward, 2),
+                "aggregate_height_penalty": round(aggregate_height_penalty, 2),
+                "holes": round(holes, 2),
+                "bumpiness": round(bumpiness, 2),
+                "survival_bonus": round(survival_bonus, 2),
+                "lost_penalty": round(lost_penalty, 2)
+            })
+            csv_fp.flush()
 
         return value
 
@@ -745,6 +806,10 @@ def main_menu():
     from stable_baselines3 import DQN
     from stable_baselines3.common.vec_env import DummyVecEnv
     from gymnasium.wrappers import RecordEpisodeStatistics
+    import time
+
+    global csv_writer, csv_fp
+
 
     env = DummyVecEnv([make_tetris_env()])
     # env = RecordEpisodeStatistics(env)
@@ -757,15 +822,19 @@ def main_menu():
         print("Training new model...")
         model = DQN("MlpPolicy", env, verbose=1, buffer_size=100000)
 
-    model.learn(total_timesteps=1000000, progress_bar=True)
+    model.learn(total_timesteps=100000, progress_bar=True)
     model.save("tetris_dqn_model")
 
     # Run the trained model
     obs = env.reset()
     done = False
+
+
     while not done:
+
         action, _ = model.predict(obs)
         obs, reward, done, _ = env.step(action)
+    # obs = env.reset()
 
     global HIGH_SCORE
     if model.get_env().envs[0].env.score > HIGH_SCORE:
@@ -774,31 +843,8 @@ def main_menu():
 
     model.save("tetris_dqn_model")
     model.save_replay_buffer("tetris_dqn_buffer")
-
-def rerun_model():
-    from stable_baselines3 import DQN
-    from stable_baselines3.common.vec_env import DummyVecEnv
-    import os
-
-    env = DummyVecEnv([make_tetris_env()])
-
-    # Load model
-    model = DQN.load("tetris_dqn_model.zip", env=env)
-
-    # if os.path.exists("tetris_dqn_buffer.pkl"):
-    #     model.load_replay_buffer("tetris_dqn_buffer")
-
-
-    obs = env.reset()
-    done = False
-
-    while True:
-        action, _ = model.predict(obs, deterministic=True)
-        obs, reward, done, info = env.step(action)
-        # done = terminated or truncated
-
-        if done:
-            obs = env.reset()
+    csv_fp.close()
+    logger.info("Finished all episodes. Model saved. CSV file closed.")
 
 
 if __name__ == "__main__":
