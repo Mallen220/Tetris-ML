@@ -175,7 +175,8 @@ logger = logging.getLogger(__name__)
 
 
 csv_file = os.path.join(log_dir, f"tetris_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
-csv_headers = ["episode", "Reward", "Cleared", "Height", "row_fill_reward", "time_reward", "aggregate_height_penalty", "holes", "bumpiness", "survival_bonus", "lost_penalty"]
+csv_headers = ["episode", "Reward", "Cleared", "setup_reward", "flatness_bonus", "progress_reward",
+               "survival_bonus", "score_reward", "height_penalty", "aggregate_height_penalty", "holes", "well_penalty", "lost_penalty"]
 
 csv_fp = open(csv_file, mode='w', newline='')
 csv_writer = csv.DictWriter(csv_fp, fieldnames=csv_headers)
@@ -227,12 +228,13 @@ class TetrisEnv:
         self.level_time = 0
         self.score = 0
         self.change_piece = False
+        self.last_aggregate_height = 0
 
         self.window = pygame.display.set_mode((s_width, s_height))
         pygame.display.set_caption('Tetris AI')
         self.clock = pygame.time.Clock()
         self.render_enabled = True  # toggle this to False if running headless
-        self.fast_mode = True
+        self.fast_mode = False
         self.done = check_lost(self.locked_positions)
         self.start_time = pygame.time.get_ticks()
 
@@ -270,47 +272,33 @@ class TetrisEnv:
             if pos[1] > -1:
                 self.locked_positions[(pos[0], pos[1])] = self.current_piece.color
 
+
         self.current_piece = self.next_piece
         self.next_piece = self.get_shape()
         self.grid = create_grid(self.locked_positions)
         cleared = clear_rows(self.grid, self.locked_positions)
         self.score += cleared * 10
         self.done = check_lost(self.locked_positions)
-        # reward = self.evaluate_board(self.grid, cleared)
-        #
-        # return reward
 
     def step(self, action):
         # print(action)
 
-        self.fall_time += pygame.time.get_ticks()
-        self.level_time += pygame.time.get_ticks()
+        # self.fall_time += pygame.time.get_ticks()
+        # self.level_time += pygame.time.get_ticks()
         self.render()
 
-        if self.level_time / 1000 >= 5:  # every 5 seconds increase the fall speed
-            # self.level_time = 0
-            if self.fall_speed > 0.12:  # minimum fall speed
-                self.fall_speed -= 0.005  # decrease the fall speed
+        if action == 4:
+            if not hasattr(self, "pending_actions") or not self.pending_actions:
+                plan = self.get_best_plan()
+                self.pending_actions = self.get_action_sequence(plan)
 
-        if self.fall_time / 1000 >= self.fall_speed:
-            self.fall_time = 0
-            self.current_piece.y += 1
-            if not(valid_space(self.current_piece, self.grid)):
+            next_action = self.pending_actions.pop(0)
+            if next_action == "drop":
+                while valid_space(self.current_piece, self.grid):
+                    self.current_piece.y += 1
                 self.current_piece.y -= 1
-                self.change_piece = True
-
-        if action == 4:  # "Best move"
-            target_rotation, target_x = self.get_best_action()
-
-            # First priority: rotation
-            if self.current_piece.rotation % len(self.current_piece.shape) != target_rotation:
-                self.do_action(3)  # rotate
-            # Then adjust horizontal position
-            elif self.current_piece.x < target_x:
-                self.do_action(1)  # move right
-            elif self.current_piece.x > target_x:
-                self.do_action(0)  # move left
-            # Else: do nothing — wait to fall naturally or with soft drop
+            else:
+                self.do_action(next_action)
         else:
             self.do_action(action)
 
@@ -404,11 +392,11 @@ class TetrisEnv:
         else:
             self.clock.tick(20)
 
-    def get_best_action(self):
+    def get_best_plan(self):
         best_value = float('-inf')
-        best_action = None
+        best_plan = None
 
-        for rotation in range(4):
+        for rotation in range(len(self.current_piece.shape)):
             for x in range(-2, 12):
                 test_piece = Piece(self.current_piece.x, self.current_piece.y, self.current_piece.shape)
                 test_piece.rotation = rotation
@@ -417,6 +405,9 @@ class TetrisEnv:
                 while valid_space(test_piece, self.grid):
                     test_piece.y += 1
                 test_piece.y -= 1
+
+                if not valid_space(test_piece, self.grid):
+                    continue
 
                 locked_copy = self.locked_positions.copy()
                 for pos in convert_shape_format(test_piece):
@@ -430,93 +421,148 @@ class TetrisEnv:
 
                 if value > best_value:
                     best_value = value
-                    best_action = (rotation, x)
+                    best_plan = {
+                        "target_x": x,
+                        "target_rotation": rotation,
+                        "drop_y": test_piece.y
+                    }
 
-        return best_action
+        return best_plan
+
+    def get_action_sequence(self, plan): #Converts a plan into a sequence of actions
+        actions = []
+        # Rotation first
+        current_rot = self.current_piece.rotation % len(self.current_piece.shape)
+        while current_rot != plan["target_rotation"]:
+            actions.append(3)  # rotate
+            current_rot = (current_rot + 1) % len(self.current_piece.shape)
+
+        # Horizontal movement
+        while self.current_piece.x < plan["target_x"]:
+            actions.append(1)  # move right
+            self.current_piece.x += 1  # simulate
+        while self.current_piece.x > plan["target_x"]:
+            actions.append(0)  # move left
+            self.current_piece.x -= 1  # simulate
+
+        # Drop to final Y
+        actions.append("drop")
+
+        return actions
 
     def evaluate_board(self, grid, cleared=0, logs=False):
         """Evaluate the quality of a board position""" #TODO modify this function to include more heuristics
         """Returns Reward Value"""
-        # Calculate height
-        heights = []
-        aggregate_height = 0
-        for col in range(10):
-            for row in range(20):
-                if grid[row][col] != (0, 0, 0):
-                    height = 20 - row
-                    heights.append(height)
-                    aggregate_height += height
-                    break
-            else:
-                heights.append(0)
+        # # Calculate height
+        # heights = []
+        # aggregate_height = 0
+        # for col in range(10):
+        #     for row in range(20):
+        #         if grid[row][col] != (0, 0, 0):
+        #             height = 20 - row
+        #             heights.append(height)
+        #             aggregate_height += height
+        #             break
+        #     else:
+        #         heights.append(0)
+        #
+        # max_height = max(heights) if heights else 0
+        #
+        # # Calculate bumpiness
+        # bumpiness = 0
+        # for i in range(9):
+        #     bumpiness += abs(heights[i] - heights[i + 1])
+        #
+        # # Count holes
+        # holes = 0
+        # for col in range(10):
+        #     found_block = False
+        #     for row in range(20):
+        #         if grid[row][col] != (0, 0, 0):
+        #             found_block = True
+        #         elif found_block:
+        #             holes += 1
+        #
+        # # 1. Reward for potential future clears (encourage setups)
+        # setup_reward = 0
+        # for col in range(10):
+        #     # Reward columns with 1-2 blocks at the top of stacks
+        #     for row in range(19, 0, -1):
+        #         if grid[row][col] == (0, 0, 0) and grid[row - 1][col] != (0, 0, 0):
+        #             # Higher reward for gaps near the top
+        #             setup_reward += (20 - row) * 0.5
+        #             break
+        # setup_reward *= 0.05  # Scale down the setup reward
+        #
+        # # 2. Flatness bonus (penalize uneven surfaces)
+        # flatness_bonus = -bumpiness * 0.1
+        #
+        # # 3. Deep well detection (prevent stuck pieces)
+        # well_penalty = 0
+        # max_well_depth = 0
+        # for col in range(10):
+        #     depth = 0
+        #     for row in range(20):
+        #         if grid[row][col] == (0, 0, 0):
+        #             depth += 1
+        #         else:
+        #             if depth > 3:  # Only penalize deep wells
+        #                 well_penalty -= (depth - 3) * 5
+        #             depth = 0
+        #     max_well_depth = max(max_well_depth, depth)
+        # well_penalty *= 0.005
+        #
+        # # 4. Survival bonus (scaled by time survived)
+        # # survival_bonus = self.level_time / 1000  # +1 per second
+        # survival_bonus = 1000
+        #
+        # # 5. Clear rewards with Tetris emphasis
+        # # clear_reward = cleared * 100
+        # # if cleared >= 4:
+        # #     clear_reward += 500  # Big Tetris bonus
+        # # elif cleared > 0:
+        # #     clear_reward += 20 * (4 - cleared)  # Bonus for partial setups
+        #
+        # # 6. Height penalties (more aggressive)
+        # height_penalty = max_height * -1
+        # aggregate_height_penalty = aggregate_height * -0.7
+        #
+        # # 7. Hole penalties (critical!)
+        # # hole_penalty = holes * -25  # Significantly increased
+        # hole_penalty = 0
+        #
+        # # Calculate how much the board has changed
+        # progress_reward = 0
+        # if hasattr(self, 'last_aggregate_height'):
+        #     height_diff = aggregate_height - self.last_aggregate_height
+        #     # Reward for reducing height (clearing lines)
+        #     if height_diff < 0:
+        #         progress_reward = -height_diff * 2
+        # self.last_aggregate_height = aggregate_height
+        # progress_reward *= 0.4  # Scale down the progress reward
+        #
+        # score_reward = self.score * 1
+        # # print(score_reward)
+        #
+        # lost_penalty = 0 #(-1000 if self.done else 0)  # Game over penalty
+        # # Calculate total value
+        # # value = (
+        # #         clear_reward +
+        # #         setup_reward +
+        # #         # flatness_bonus +
+        # #         progress_reward +
+        # #         score_reward
+        # #         # survival_bonus +
+        # #         # height_penalty +
+        # #         # aggregate_height_penalty +
+        # #         # hole_penalty +
+        # #         # well_penalty +
+        # #         # lost_penalty
+        # # )
 
-        max_height = max(heights) if heights else 0
-
-        # Calculate bumpiness
-        bumpiness = 0
-        for i in range(9):
-            bumpiness += abs(heights[i] - heights[i + 1])
-
-        # Count holes
-        holes = 0
-        for col in range(10):
-            found_block = False
-            for row in range(20):
-                if grid[row][col] != (0, 0, 0):
-                    found_block = True
-                elif found_block:
-                    holes += 1
-
-        # Reward clearing - higher reward for lower clears
-        clear_reward = 0
-        if cleared > 0:
-            # Base reward + bonus for multiple lines
-            clear_reward = 100 * cleared + (100 if cleared >= 4 else 0)
-            # Height bonus: more reward for lower clears
-            height_bonus = max(0, (15 - max_height) * 1)
-            clear_reward += height_bonus
-
-        # Row fill reward: reward rows that are nearly full
-        row_fill_reward = 0
-        for row in grid:
-            filled = sum(1 for cell in row if cell != (0, 0, 0))
-            if 0 < filled < 10:  # ignore empty and cleared rows
-                # Scale the reward quadratically to favor fuller rows
-                row_fill_reward += (filled / 10) ** 2 * 6  # You can tune the weight (5)
-
-        if hasattr(self, "start_time"):
-            time_running = (pygame.time.get_ticks() - self.start_time) / 1000
-            time_reward = time_running * 5
-        else:
-            time_reward = 0
-
-        # Penalties (make these dominant factors)
-        height_penalty = max_height * -10  # Strong penalty for max height
-        aggregate_height_penalty = aggregate_height * -0.2  # Penalty for total height
-        hole_penalty = holes * -1  # Significant hole penalty
-        bumpiness_penalty = bumpiness * -5  # Penalize uneven surfaces
-
-
-        # Lost game penalty
-        lost_penalty = -1000 if self.done else 0
-
-        # Survival bonus (small to encourage longevity without promoting height)
-        survival_bonus = 0.1 if not self.done else 0
-
-
-
-        # Calculate total value
-        value = (
-                clear_reward +
-                # height_penalty +
-                row_fill_reward +
-                time_reward +
-                # aggregate_height_penalty +
-                # hole_penalty +
-                # bumpiness_penalty +
-                survival_bonus +
-                lost_penalty
-        )
+        value = 1 + (cleared ** 2) * 10  # BOARD_WIDTH = 10
+        if self.done:
+            value -= 2
 
         if logs:
             global episode_counter
@@ -525,26 +571,29 @@ class TetrisEnv:
 
             logger.info(f"Reward: {round(value, 2)}, "
                         f"Cleared: {round(cleared, 2)}, "
-                        f"Height: {round(height_penalty, 2)}, "
-                        f"row_fill_reward: {round(row_fill_reward, 2)}, "
-                        f"time_reward: {round(time_reward, 2)}, "
-                        f"aggregate_height_penalty: {round(aggregate_height_penalty, 2)}, "
-                        f"holes: {round(holes, 2)}, "
-                        f"bumpiness: {round(bumpiness, 2)}, "
-                        f"survival_bonus: {round(survival_bonus, 2)}, "
-                        f"lost_penalty: {round(lost_penalty, 2)}")
+                        # f"setup_reward: {round(setup_reward, 2)}, "
+                        # f"flatness_bonus: {round(flatness_bonus, 2)}, "
+                        # f"progress_reward: {round(progress_reward, 2)}, "
+                        # f"survival_bonus: {round(survival_bonus, 2)}, "
+                        # f"height_penalty: {round(height_penalty, 2)}, "
+                        # # f"aggregate_height_penalty: {round(aggregate_height_penalty, 2)}, "
+                        # f"holes: {round(hole_penalty, 2)}, "
+                        # f"well_penalty: {round(well_penalty, 2)}, "
+                        # f":lost_penalty: {round(lost_penalty, 2)}"
+            )
             csv_writer.writerow({
                 "episode": episode_counter,
                 "Reward": round(value, 2),
                 "Cleared": round(cleared, 2),
-                "Height": round(height_penalty, 2),
-                "row_fill_reward": round(row_fill_reward, 2),
-                "time_reward": round(time_reward, 2),
-                "aggregate_height_penalty": round(aggregate_height_penalty, 2),
-                "holes": round(holes, 2),
-                "bumpiness": round(bumpiness, 2),
-                "survival_bonus": round(survival_bonus, 2),
-                "lost_penalty": round(lost_penalty, 2)
+                # "setup_reward": round(setup_reward, 2),
+                # "flatness_bonus": round(flatness_bonus, 2),
+                # "progress_reward": round(progress_reward, 2),
+                # "survival_bonus": round(survival_bonus, 2),
+                # "height_penalty": round(height_penalty, 2),
+                # # "aggregate_height_penalty": round(aggregate_height_penalty, 2),
+                # "holes": round(hole_penalty, 2),
+                # "well_penalty": round(well_penalty, 2),
+                # "lost_penalty": round(lost_penalty, 2)
             })
             csv_fp.flush()
 
@@ -712,24 +761,32 @@ def draw_grid(surface, grid):
             pygame.draw.line(surface, (128, 128, 128), (sx + j * block_size, sy), (sx + j * block_size, sy + play_height))
 
 def clear_rows(grid, locked):
-    inc = 0
+    rows_to_clear = []
     for i in range(len(grid)-1, -1, -1):
-        row = grid[i]
-        if (0, 0, 0) not in row:
-            inc += 1
-            ind = i
-            for j in range(len(row)):
+        if (0, 0, 0) not in grid[i]:
+            rows_to_clear.append(i)
+            for j in range(len(grid[i])):
                 try:
                     del locked[(j, i)]
-                except ValueError:
-                    continue
-    if inc > 0:
-        for key in sorted(list(locked), key = lambda x: x[1])[::-1]:
-            x, y = key
-            if y < ind:
-                new_key = (x, y + inc)
-                locked[new_key] = locked.pop(key)
-    return inc
+                except KeyError:
+                    pass
+    rows_to_clear.append(5)  # Always clear the last three rows
+    rows_to_clear.append(2)  # Always clear the last three rows
+    rows_to_clear.append(1)  # Always clear the last three rows
+
+    if rows_to_clear:
+        # Sort in ascending order to shift properly
+        rows_to_clear.sort()
+        for row in rows_to_clear:
+            # Move all rows above this row down by 1
+            for key in sorted(locked.copy(), key=lambda x: x[1]):
+                x, y = key
+                if y < row:
+                    new_key = (x, y + 1)
+                    locked[new_key] = locked.pop(key)
+
+    return len(rows_to_clear)
+
 
 
 def draw_next_shape(shape, surface):
@@ -814,15 +871,29 @@ def main_menu():
     env = DummyVecEnv([make_tetris_env()])
     # env = RecordEpisodeStatistics(env)
 
-    # if os.path.exists("tetris_dqn_model.zip"):
-    if False:
+    if os.path.exists("tetris_dqn_model.zip"):
+    # if False:
         print("Loading saved model...")
         model = DQN.load("tetris_dqn_model.zip", env=env)
     else:
         print("Training new model...")
-        model = DQN("MlpPolicy", env, verbose=1, buffer_size=100000)
+        # model = DQN("MlpPolicy", env, verbose=1, buffer_size=100000)
+        model = DQN(
+            "MlpPolicy",
+            env,
+            verbose=1,
+            buffer_size=200000,  # Larger buffer for complex game
+            learning_starts=10000,  # Collect experiences before learning
+            target_update_interval=1000,  # Update target network
+            train_freq=4,  # Update every 4 steps
+            gradient_steps=1,  # How many gradient steps per update
+            exploration_fraction=0.2,  # Longer exploration
+            exploration_final_eps=0.02  # Lower final exploration
+        )
 
-    model.learn(total_timesteps=100000, progress_bar=True)
+
+
+    model.learn(total_timesteps=200000, progress_bar=True)
     model.save("tetris_dqn_model")
 
     # Run the trained model
