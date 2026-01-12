@@ -771,10 +771,6 @@ def clear_rows(grid, locked):
                     del locked[(j, i)]
                 except KeyError:
                     pass
-    rows_to_clear.append(5)  # Always clear the last three rows
-    rows_to_clear.append(2)  # Always clear the last three rows
-    rows_to_clear.append(1)  # Always clear the last three rows
-
     if rows_to_clear:
         # Sort in ascending order to shift properly
         rows_to_clear.sort()
