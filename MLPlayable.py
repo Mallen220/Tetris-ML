@@ -448,12 +448,13 @@ class TetrisEnv:
             current_rot = (current_rot + 1) % len(self.current_piece.shape)
 
         # Horizontal movement
-        while self.current_piece.x < plan["target_x"]:
+        curr_x = self.current_piece.x
+        while curr_x < plan["target_x"]:
             actions.append(1)  # move right
-            self.current_piece.x += 1  # simulate
-        while self.current_piece.x > plan["target_x"]:
+            curr_x += 1  # simulate
+        while curr_x > plan["target_x"]:
             actions.append(0)  # move left
-            self.current_piece.x -= 1  # simulate
+            curr_x -= 1  # simulate
 
         # Drop to final Y
         actions.append("drop")
