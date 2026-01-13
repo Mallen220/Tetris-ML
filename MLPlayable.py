@@ -484,6 +484,11 @@ class TetrisEnv:
         for i in range(9):
             bumpiness += abs(heights[i] - heights[i + 1])
 
+        # Include walls in bumpiness to avoid edge bias
+        if len(heights) > 0:
+            bumpiness += heights[0] # Left wall (height 0)
+            bumpiness += heights[-1] # Right wall (height 0)
+
         # Count holes
         holes = 0
         for col in range(10):
@@ -509,7 +514,9 @@ class TetrisEnv:
         flatness_bonus = 0
         if hasattr(self, 'last_bumpiness'):
             flatness_bonus = (self.last_bumpiness - bumpiness) * 0.5
-        self.last_bumpiness = bumpiness
+
+        if logs:
+            self.last_bumpiness = bumpiness
 
         # 3. Deep well detection (prevent stuck pieces)
         well_penalty = 0
@@ -533,7 +540,9 @@ class TetrisEnv:
         hole_penalty = 0
         if hasattr(self, 'last_holes'):
             hole_penalty = (self.last_holes - holes) * 10 # Reward for reducing holes, penalty for adding them
-        self.last_holes = holes
+
+        if logs:
+            self.last_holes = holes
 
         # Calculate how much the board has changed
         progress_reward = 0
@@ -541,7 +550,9 @@ class TetrisEnv:
             height_diff = aggregate_height - self.last_aggregate_height
             # Reward for reducing height (clearing lines)
             progress_reward = -height_diff * 0.5 # Penalty for increasing height, reward for decreasing
-        self.last_aggregate_height = aggregate_height
+
+        if logs:
+            self.last_aggregate_height = aggregate_height
 
         # score_reward = self.score * 1
         # print(score_reward)
