@@ -210,12 +210,17 @@ def create_grid(locked_positions={}):
     return grid
 
 class TetrisEnv:
-    def __init__(self, window_id=None):
-        pygame.init()
+    def __init__(self, window_id=None, render_enabled=True):
+        self.render_enabled = render_enabled  # toggle this to False if running headless
+        if self.render_enabled:
+            pygame.init()
 
         self.window_id = window_id
+        if self.render_enabled:
+            self.win = pygame.display.set_mode((s_width, s_height))
+        else:
+            self.win = None
 
-        self.win = pygame.display.set_mode((s_width, s_height))
         self.possible_next_pieces = shapes.copy()
         self.run = True
         self.locked_positions = {}
@@ -229,11 +234,16 @@ class TetrisEnv:
         self.score = 0
         self.change_piece = False
         self.last_aggregate_height = 0
+        self.last_bumpiness = 0
+        self.last_holes = 0
 
-        self.window = pygame.display.set_mode((s_width, s_height))
-        pygame.display.set_caption('Tetris AI')
+        if self.render_enabled:
+            self.window = pygame.display.set_mode((s_width, s_height))
+            pygame.display.set_caption('Tetris AI')
+        else:
+            self.window = None
+
         self.clock = pygame.time.Clock()
-        self.render_enabled = True  # toggle this to False if running headless
         self.fast_mode = False
         self.done = check_lost(self.locked_positions)
         self.start_time = pygame.time.get_ticks()
@@ -438,12 +448,13 @@ class TetrisEnv:
             current_rot = (current_rot + 1) % len(self.current_piece.shape)
 
         # Horizontal movement
-        while self.current_piece.x < plan["target_x"]:
+        curr_x = self.current_piece.x
+        while curr_x < plan["target_x"]:
             actions.append(1)  # move right
-            self.current_piece.x += 1  # simulate
-        while self.current_piece.x > plan["target_x"]:
+            curr_x += 1  # simulate
+        while curr_x > plan["target_x"]:
             actions.append(0)  # move left
-            self.current_piece.x -= 1  # simulate
+            curr_x -= 1  # simulate
 
         # Drop to final Y
         actions.append("drop")
@@ -453,38 +464,43 @@ class TetrisEnv:
     def evaluate_board(self, grid, cleared=0, logs=False):
         """Evaluate the quality of a board position""" #TODO modify this function to include more heuristics
         """Returns Reward Value"""
-        # # Calculate height
-        # heights = []
-        # aggregate_height = 0
-        # for col in range(10):
-        #     for row in range(20):
-        #         if grid[row][col] != (0, 0, 0):
-        #             height = 20 - row
-        #             heights.append(height)
-        #             aggregate_height += height
-        #             break
-        #     else:
-        #         heights.append(0)
-        #
-        # max_height = max(heights) if heights else 0
-        #
-        # # Calculate bumpiness
-        # bumpiness = 0
-        # for i in range(9):
-        #     bumpiness += abs(heights[i] - heights[i + 1])
-        #
-        # # Count holes
-        # holes = 0
-        # for col in range(10):
-        #     found_block = False
-        #     for row in range(20):
-        #         if grid[row][col] != (0, 0, 0):
-        #             found_block = True
-        #         elif found_block:
-        #             holes += 1
-        #
-        # # 1. Reward for potential future clears (encourage setups)
-        # setup_reward = 0
+        # Calculate height
+        heights = []
+        aggregate_height = 0
+        for col in range(10):
+            for row in range(20):
+                if grid[row][col] != (0, 0, 0):
+                    height = 20 - row
+                    heights.append(height)
+                    aggregate_height += height
+                    break
+            else:
+                heights.append(0)
+
+        max_height = max(heights) if heights else 0
+
+        # Calculate bumpiness
+        bumpiness = 0
+        for i in range(9):
+            bumpiness += abs(heights[i] - heights[i + 1])
+
+        # Include walls in bumpiness to avoid edge bias
+        if len(heights) > 0:
+            bumpiness += heights[0] # Left wall (height 0)
+            bumpiness += heights[-1] # Right wall (height 0)
+
+        # Count holes
+        holes = 0
+        for col in range(10):
+            found_block = False
+            for row in range(20):
+                if grid[row][col] != (0, 0, 0):
+                    found_block = True
+                elif found_block and grid[row][col] == (0, 0, 0):
+                    holes += 1
+
+        # 1. Reward for potential future clears (encourage setups)
+        setup_reward = 0
         # for col in range(10):
         #     # Reward columns with 1-2 blocks at the top of stacks
         #     for row in range(19, 0, -1):
@@ -493,76 +509,73 @@ class TetrisEnv:
         #             setup_reward += (20 - row) * 0.5
         #             break
         # setup_reward *= 0.05  # Scale down the setup reward
-        #
-        # # 2. Flatness bonus (penalize uneven surfaces)
-        # flatness_bonus = -bumpiness * 0.1
-        #
-        # # 3. Deep well detection (prevent stuck pieces)
-        # well_penalty = 0
-        # max_well_depth = 0
-        # for col in range(10):
-        #     depth = 0
-        #     for row in range(20):
-        #         if grid[row][col] == (0, 0, 0):
-        #             depth += 1
-        #         else:
-        #             if depth > 3:  # Only penalize deep wells
-        #                 well_penalty -= (depth - 3) * 5
-        #             depth = 0
-        #     max_well_depth = max(max_well_depth, depth)
-        # well_penalty *= 0.005
-        #
-        # # 4. Survival bonus (scaled by time survived)
-        # # survival_bonus = self.level_time / 1000  # +1 per second
-        # survival_bonus = 1000
-        #
-        # # 5. Clear rewards with Tetris emphasis
-        # # clear_reward = cleared * 100
-        # # if cleared >= 4:
-        # #     clear_reward += 500  # Big Tetris bonus
-        # # elif cleared > 0:
-        # #     clear_reward += 20 * (4 - cleared)  # Bonus for partial setups
-        #
-        # # 6. Height penalties (more aggressive)
-        # height_penalty = max_height * -1
-        # aggregate_height_penalty = aggregate_height * -0.7
-        #
-        # # 7. Hole penalties (critical!)
-        # # hole_penalty = holes * -25  # Significantly increased
-        # hole_penalty = 0
-        #
-        # # Calculate how much the board has changed
-        # progress_reward = 0
-        # if hasattr(self, 'last_aggregate_height'):
-        #     height_diff = aggregate_height - self.last_aggregate_height
-        #     # Reward for reducing height (clearing lines)
-        #     if height_diff < 0:
-        #         progress_reward = -height_diff * 2
-        # self.last_aggregate_height = aggregate_height
-        # progress_reward *= 0.4  # Scale down the progress reward
-        #
-        # score_reward = self.score * 1
-        # # print(score_reward)
-        #
-        # lost_penalty = 0 #(-1000 if self.done else 0)  # Game over penalty
-        # # Calculate total value
-        # # value = (
-        # #         clear_reward +
-        # #         setup_reward +
-        # #         # flatness_bonus +
-        # #         progress_reward +
-        # #         score_reward
-        # #         # survival_bonus +
-        # #         # height_penalty +
-        # #         # aggregate_height_penalty +
-        # #         # hole_penalty +
-        # #         # well_penalty +
-        # #         # lost_penalty
-        # # )
 
-        value = 1 + (cleared ** 2) * 10  # BOARD_WIDTH = 10
-        if self.done:
-            value -= 2
+        # 2. Flatness bonus (penalize uneven surfaces)
+        flatness_bonus = 0
+        if hasattr(self, 'last_bumpiness'):
+            flatness_bonus = (self.last_bumpiness - bumpiness) * 0.5
+
+        if logs:
+            self.last_bumpiness = bumpiness
+
+        # 3. Deep well detection (prevent stuck pieces)
+        well_penalty = 0
+
+        # 4. Survival bonus (scaled by time survived)
+        survival_bonus = 1
+
+        # 5. Clear rewards with Tetris emphasis
+        clear_reward = cleared * 100
+        if cleared >= 4:
+            clear_reward += 500  # Big Tetris bonus
+        elif cleared > 0:
+            clear_reward += 20 * (4 - cleared)  # Bonus for partial setups
+
+        # 6. Height penalties (more aggressive)
+        # height_penalty = max_height * -2 # Removed absolute penalty
+        # aggregate_height_penalty = aggregate_height * -0.5 # Removed absolute penalty
+
+        # 7. Hole penalties (critical!)
+        # hole_penalty = holes * -10  # Removed absolute penalty
+        hole_penalty = 0
+        if hasattr(self, 'last_holes'):
+            hole_penalty = (self.last_holes - holes) * 10 # Reward for reducing holes, penalty for adding them
+
+        if logs:
+            self.last_holes = holes
+
+        # Calculate how much the board has changed
+        progress_reward = 0
+        if hasattr(self, 'last_aggregate_height'):
+            height_diff = aggregate_height - self.last_aggregate_height
+            # Reward for reducing height (clearing lines)
+            progress_reward = -height_diff * 0.5 # Penalty for increasing height, reward for decreasing
+
+        if logs:
+            self.last_aggregate_height = aggregate_height
+
+        # score_reward = self.score * 1
+        # print(score_reward)
+
+        lost_penalty = (-50 if self.done else 0)  # Game over penalty
+        # Calculate total value
+        value = (
+                clear_reward +
+                # setup_reward +
+                flatness_bonus +
+                progress_reward +
+                # score_reward
+                survival_bonus +
+                # height_penalty +
+                # aggregate_height_penalty +
+                hole_penalty +
+                # well_penalty +
+                lost_penalty
+        )
+
+        # value = 1 + (cleared ** 2) * 10  # BOARD_WIDTH = 10
+        # if self.done:
+        #     value -= 2
 
         if logs:
             global episode_counter
@@ -572,28 +585,28 @@ class TetrisEnv:
             logger.info(f"Reward: {round(value, 2)}, "
                         f"Cleared: {round(cleared, 2)}, "
                         # f"setup_reward: {round(setup_reward, 2)}, "
-                        # f"flatness_bonus: {round(flatness_bonus, 2)}, "
-                        # f"progress_reward: {round(progress_reward, 2)}, "
-                        # f"survival_bonus: {round(survival_bonus, 2)}, "
+                        f"flatness_bonus: {round(flatness_bonus, 2)}, "
+                        f"progress_reward: {round(progress_reward, 2)}, "
+                        f"survival_bonus: {round(survival_bonus, 2)}, "
                         # f"height_penalty: {round(height_penalty, 2)}, "
-                        # # f"aggregate_height_penalty: {round(aggregate_height_penalty, 2)}, "
-                        # f"holes: {round(hole_penalty, 2)}, "
+                        # f"aggregate_height_penalty: {round(aggregate_height_penalty, 2)}, "
+                        f"holes: {round(hole_penalty, 2)}, "
                         # f"well_penalty: {round(well_penalty, 2)}, "
-                        # f":lost_penalty: {round(lost_penalty, 2)}"
+                        f"lost_penalty: {round(lost_penalty, 2)}"
             )
             csv_writer.writerow({
                 "episode": episode_counter,
                 "Reward": round(value, 2),
                 "Cleared": round(cleared, 2),
                 # "setup_reward": round(setup_reward, 2),
-                # "flatness_bonus": round(flatness_bonus, 2),
-                # "progress_reward": round(progress_reward, 2),
-                # "survival_bonus": round(survival_bonus, 2),
+                "flatness_bonus": round(flatness_bonus, 2),
+                "progress_reward": round(progress_reward, 2),
+                "survival_bonus": round(survival_bonus, 2),
                 # "height_penalty": round(height_penalty, 2),
-                # # "aggregate_height_penalty": round(aggregate_height_penalty, 2),
-                # "holes": round(hole_penalty, 2),
+                # "aggregate_height_penalty": round(aggregate_height_penalty, 2),
+                "holes": round(hole_penalty, 2),
                 # "well_penalty": round(well_penalty, 2),
-                # "lost_penalty": round(lost_penalty, 2)
+                "lost_penalty": round(lost_penalty, 2)
             })
             csv_fp.flush()
 
@@ -632,16 +645,16 @@ class TetrisEnv:
                 empty_columns += 1
         return empty_columns
 
-def make_tetris_env(window_id=None):
+def make_tetris_env(window_id=None, render_enabled=True):
     def _init():
-        return GymTetrisEnv(window_id=window_id)
+        return GymTetrisEnv(window_id=window_id, render_enabled=render_enabled)
     return _init
 
 
 class GymTetrisEnv(gym.Env):
-    def __init__(self, window_id=None):
+    def __init__(self, window_id=None, render_enabled=True):
         super().__init__()
-        self.env = TetrisEnv(window_id=window_id)
+        self.env = TetrisEnv(window_id=window_id, render_enabled=render_enabled)
 
         self.observation_space = gym.spaces.Box(
             low=0,
@@ -770,10 +783,6 @@ def clear_rows(grid, locked):
                     del locked[(j, i)]
                 except KeyError:
                     pass
-    rows_to_clear.append(5)  # Always clear the last three rows
-    rows_to_clear.append(2)  # Always clear the last three rows
-    rows_to_clear.append(1)  # Always clear the last three rows
-
     if rows_to_clear:
         # Sort in ascending order to shift properly
         rows_to_clear.sort()
@@ -868,7 +877,7 @@ def main_menu():
     global csv_writer, csv_fp
 
 
-    env = DummyVecEnv([make_tetris_env()])
+    env = DummyVecEnv([make_tetris_env(render_enabled=False)])
     # env = RecordEpisodeStatistics(env)
 
     if os.path.exists("tetris_dqn_model.zip"):
