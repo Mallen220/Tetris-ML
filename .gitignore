@@ -2,3 +2,6 @@
 tetris_dqn_buffer.pkl
 scores.txt
 /logs
+.venv/
+venv/
+__pycache__/
